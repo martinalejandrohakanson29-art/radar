@@ -1,0 +1,66 @@
+{
+  "_nota": "Niveles al 21/11/2026. Actualizalos cuando cambie el mercado; el código no hace falta tocarlo.",
+
+  "escenarioA": {
+    "_desc": "Rebote por capitulación: barrida bajo zona + recuperación",
+    "barridaMax": 57000,
+    "recuperacion": 59000,
+    "velasBarrida": 2,
+    "mechaMinima": 0.4,
+    "volumenMultiplo": 1.5,
+    "extrasMinimos": 2,
+    "objetivoPct": 5
+  },
+
+  "escenarioB": {
+    "_desc": "Confirmación: cierre diario sobre ruptura + retesteo sostenido",
+    "ruptura": 63000,
+    "invalidacion": 61000,
+    "diasRuptura": 7,
+    "toleranciaRetestPct": 1.5,
+    "volumenMultiplo": 1.2,
+    "objetivoPct": 5
+  },
+
+  "altcoins": {
+    "ETH": {
+      "par": "ETHUSDT",
+      "ratio": "ETHBTC",
+      "ratioPiso": 0.0277,
+      "ratioRecupera": 0.029,
+      "requeridos": ["piso", "recupera", "fuerza"],
+      "objetivoPct": 10,
+      "stopPct": 6.5,
+      "perpetuo": "ETHUSDT"
+    },
+    "SOL": {
+      "par": "SOLUSDT",
+      "ratio": "SOLBTC",
+      "requeridos": ["estructura", "fuerza"],
+      "objetivoPct": 10,
+      "stopPct": 8,
+      "perpetuo": "SOLUSDT"
+    }
+  },
+
+  "macro": {
+    "_desc": "Datos de Yahoo Finance. Nasdaq = filtro, dólar = confirmación, oro = solo contexto",
+    "nasdaq": "^IXIC",
+    "dolar": "DX-Y.NYB",
+    "oro": "GC=F",
+    "nasdaqCaidaDiaPct": 2,
+    "nasdaqDiasMinimo": 20,
+    "dolarPromedioDias": 10
+  },
+
+  "filtros": {
+    "diasBloqueoEvento": 3,
+    "alertaAceleracionEtfMillones": 500
+  },
+
+  "eventos": [
+    { "fecha": "2026-12-09", "nombre": "FOMC (decisión de tasas Fed) — verificar fecha" }
+  ],
+
+  "abrirNavegadorSiHaySenal": true
+}
