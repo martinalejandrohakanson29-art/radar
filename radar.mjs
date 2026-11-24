@@ -424,12 +424,17 @@ table{width:100%;border-collapse:collapse;font-size:.9rem}caption{text-align:lef
 td{padding:4px 0;border-top:1px solid var(--line)}.num{text-align:right;font-variant-numeric:tabular-nums}.neg{color:var(--neg)}.pos{color:var(--pos)}
 .filters li{margin:4px 0}.hist{font-size:.8rem;color:var(--fg);opacity:.85}.lp-hero{border-width:2px}.lp-hero h2{font-size:1.15rem}.lp-hero p{margin:8px 0}h3{margin:22px 0 10px;font-size:1rem}
 footer{margin-top:24px;font-size:.8rem}
+.refresh{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:-4px 0 16px;font-size:.82rem}.refresh button{font:inherit;font-weight:600;font-size:.9rem;padding:8px 16px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;flex:none}.refresh button:hover{border-color:var(--muted)}.refresh button:disabled{opacity:.6;cursor:wait}.refresh span{flex:1;min-width:220px}
 @media (max-width:480px){.plan{grid-template-columns:repeat(2,1fr)}}
 </style></head><body><main>
 <div class="top">
   <div><h1>BTC Radar</h1><div class="muted">Generado ${esc(d.generado)} · señales con la vela diaria cerrada del ${d.velaFecha}</div></div>
   <div><div class="price">${usd(d.precio)}</div><div class="muted">BTC ahora (vela en curso ${pct(d.cambioVivo, 2)})</div></div>
 </div>
+${process.env.RADAR_WEB ? `<form method="post" action="/actualizar" class="refresh" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Actualizando… (30–60 s)'">
+  <button type="submit">↻ Actualizar ahora</button>
+  <span class="muted">Con el precio en vivo se recalculan la valuación de largo plazo y la distancia a los niveles de compra. ETF, Fear &amp; Greed, empresas y stablecoins cambian una vez por día; el swing y los escenarios, solo al cierre diario (21:00). Se actualiza solo todos los días a las 21:10.</span>
+</form>` : ''}
 ${d.LP.error ? '' : renderLargoPlazo(d.LP)}
 <h3>Sistema swing (corto plazo, opcional)</h3>
 <p class="muted" style="margin-top:-4px">Compra si el cierre diario supera el máximo de ${cfg.swing.entradaDias} días y la media de ${cfg.swing.mediaTendencia}; vende si cierra debajo del mínimo de ${cfg.swing.salidaDias} días. ${fmt(cfg.swing.pesoPorActivo * 100)}% del capital por activo, solo spot. Se decide con la vela diaria cerrada (21:00 ART).</p>

@@ -15,17 +15,22 @@ const USER = process.env.RADAR_USER || '';
 const PASS = process.env.RADAR_PASS || '';
 const [HH, MM] = (process.env.RADAR_HORA_UTC || '00:10').split(':').map(Number);
 
-let corriendo = false;
+// Devuelve una promesa que termina cuando el análisis termina (si ya está corriendo, la misma).
+let corriendo = null, ultimaCorrida = 0;
 function correrRadar(motivo) {
-  if (corriendo) return;
-  corriendo = true;
+  if (corriendo) return corriendo;
   console.log(`[${new Date().toISOString()}] corriendo radar (${motivo})`);
-  execFile(process.execPath, [path.join(DIR, 'radar.mjs')], { env: { ...process.env, DATA_DIR: DATA }, timeout: 180000 },
-    (err, out, errOut) => {
-      corriendo = false;
-      if (out) console.log(out.trim());
-      if (err) console.error('radar falló:', err.message, errOut);
-    });
+  corriendo = new Promise((resolve) => {
+    execFile(process.execPath, [path.join(DIR, 'radar.mjs')], { env: { ...process.env, DATA_DIR: DATA, RADAR_WEB: '1' }, timeout: 180000 },
+      (err, out, errOut) => {
+        corriendo = null;
+        ultimaCorrida = Date.now();
+        if (out) console.log(out.trim());
+        if (err) console.error('radar falló:', err.message, errOut);
+        resolve();
+      });
+  });
+  return corriendo;
 }
 
 function programarDiario() {
@@ -65,7 +70,8 @@ http.createServer(async (req, res) => {
       return res.end(csv);
     }
     if (url.pathname === '/actualizar' && req.method === 'POST') {
-      correrRadar('manual');
+      // máximo una corrida cada 2 minutos (las APIs gratuitas limitan); espera a que termine y vuelve al reporte
+      if (Date.now() - ultimaCorrida > 120e3 || corriendo) await correrRadar('manual');
       res.writeHead(303, { Location: '/' });
       return res.end();
     }
