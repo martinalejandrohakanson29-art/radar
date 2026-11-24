@@ -1,8 +1,17 @@
 {
   "_nota": "Niveles al 21/11/2026. Actualizalos cuando cambie el mercado; el código no hace falta tocarlo.",
 
+  "swing": {
+    "_desc": "Sistema swing validado con backtest (backtest/): compra si cierre > máximo de N días y > media M; vende si cierre < mínimo de X días. Solo spot, long o afuera.",
+    "activos": { "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT" },
+    "entradaDias": 30,
+    "salidaDias": 15,
+    "mediaTendencia": 200,
+    "pesoPorActivo": 0.3333
+  },
+
   "escenarioA": {
-    "_desc": "Rebote por capitulación: barrida bajo zona + recuperación",
+    "_desc": "SOLO INFORMATIVO: el backtest (backtest/escenarioA.mjs) le da expectativa negativa. Nunca marca OPORTUNIDAD.",
     "barridaMax": 57000,
     "recuperacion": 59000,
     "velasBarrida": 2,

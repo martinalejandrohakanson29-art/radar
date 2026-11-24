@@ -1,0 +1,133 @@
+//@version=6
+// Radar Swing — mismo sistema que la tarjeta "Sistema swing" de radar.mjs
+// Compra: cierre diario > máximo de los N cierres previos y > media de M días.
+// Venta:  cierre diario < mínimo de los X cierres previos.  Solo spot, comprado o afuera.
+// Todo se calcula sobre velas DIARIAS cerradas (no repinta): sirve en cualquier temporalidad del gráfico.
+// Las marcas aparecen en la vela siguiente al cierre que dio la señal (= el momento de ejecutar).
+indicator("Radar Swing — Donchian + media", shorttitle = "Radar Swing", overlay = true, max_labels_count = 500)
+
+grpS = "Sistema (igual que config.json → swing)"
+nEntrada = input.int(30, "Entrada: máximo de N días", minval = 2, group = grpS)
+nSalida  = input.int(15, "Salida: mínimo de N días", minval = 2, group = grpS)
+nMedia   = input.int(200, "Media de tendencia (días)", minval = 10, group = grpS)
+
+grpT = "Tablero"
+verTabla = input.bool(true, "Mostrar tablero", group = grpT)
+posTabla = input.string("Arriba derecha", "Posición", options = ["Arriba derecha", "Abajo derecha", "Arriba izquierda", "Abajo izquierda"], group = grpT)
+sym1 = input.symbol("BINANCE:BTCUSDT", "Activo 1", group = grpT)
+sym2 = input.symbol("BINANCE:ETHUSDT", "Activo 2", group = grpT)
+sym3 = input.symbol("BINANCE:SOLUSDT", "Activo 3", group = grpT)
+
+grpG = "Gráfico"
+verNiveles = input.bool(true, "Líneas de gatillo y media", group = grpG)
+verFondo   = input.bool(true, "Fondo verde mientras está comprado", group = grpG)
+
+// Estados
+AFUERA   = 0
+COMPRAR  = 1
+MANTENER = 2
+VENDER   = 3
+
+// ---------- Lógica (se evalúa en velas diarias del símbolo pedido) ----------
+// gatillo / venta = niveles que va a mirar el PRÓXIMO cierre (incluyen la vela actual)
+swing() =>
+    float maxPrev = ta.highest(close[1], nEntrada)
+    float minPrev = ta.lowest(close[1], nSalida)
+    float media   = ta.sma(close, nMedia)
+    var bool  enPos     = false
+    var float pxEntrada = na
+    var int   tEntrada  = na
+    var float resUltima = na
+    int estado = enPos ? MANTENER : AFUERA
+    if not enPos and not na(media) and not na(maxPrev) and close > maxPrev and close > media
+        enPos     := true
+        pxEntrada := close
+        tEntrada  := time
+        estado    := COMPRAR
+    else if enPos and close < minPrev
+        enPos     := false
+        resUltima := (close / pxEntrada - 1) * 100
+        estado    := VENDER
+    float gatillo = math.max(ta.highest(close, nEntrada), media)
+    float venta   = ta.lowest(close, nSalida)
+    [estado, gatillo, venta, media, pxEntrada, tEntrada, resUltima]
+
+// Versión sin repintado: valores de la última vela diaria CERRADA
+swingCerrado() =>
+    [e, g, v, m, px, t, r] = swing()
+    [e[1], g[1], v[1], m[1], px[1], t[1], r[1]]
+
+leer(sym) => request.security(sym, "D", swingCerrado(), lookahead = barmerge.lookahead_on)
+
+// ---------- Símbolo del gráfico ----------
+[eC, gC, vC, mC, pxC, tC, rC] = leer(syminfo.tickerid)
+enPosC   = eC == COMPRAR or eC == MANTENER
+nuevoDia = timeframe.change("D")
+
+plot(verNiveles and not enPosC ? gC : na, "Gatillo compra", color.new(color.teal, 0), 2, plot.style_linebr)
+plot(verNiveles and enPosC ? vC : na, "Gatillo venta", color.new(color.red, 0), 2, plot.style_linebr)
+plot(verNiveles ? mC : na, "Media tendencia", color.new(color.gray, 30), 1)
+bgcolor(verFondo and enPosC ? color.new(color.green, 90) : na, title = "Comprado")
+plotshape(nuevoDia and eC == COMPRAR, "Compra", shape.labelup, location.belowbar, color.new(color.green, 0), text = "COMPRA", textcolor = color.white, size = size.small)
+plotshape(nuevoDia and eC == VENDER, "Venta", shape.labeldown, location.abovebar, color.new(color.red, 0), text = "VENTA", textcolor = color.white, size = size.small)
+
+alertcondition(nuevoDia and eC == COMPRAR, "Radar Swing: COMPRA (gráfico)", "Radar Swing: señal de COMPRA en {{ticker}} — cierre diario {{close}}")
+alertcondition(nuevoDia and eC == VENDER, "Radar Swing: VENTA (gráfico)", "Radar Swing: señal de VENTA en {{ticker}} — cierre diario {{close}}")
+
+// ---------- Tablero BTC / ETH / SOL ----------
+[e1, g1, v1, m1, px1, t1, r1] = leer(sym1)
+[e2, g2, v2, m2, px2, t2, r2] = leer(sym2)
+[e3, g3, v3, m3, px3, t3, r3] = leer(sym3)
+p1 = request.security(sym1, "D", close)
+p2 = request.security(sym2, "D", close)
+p3 = request.security(sym3, "D", close)
+
+nombre(sym) =>
+    partes = str.split(sym, ":")
+    array.get(partes, array.size(partes) - 1)
+
+txtEstado(e) => e == COMPRAR ? "COMPRAR" : e == VENDER ? "VENDER" : e == MANTENER ? "MANTENER" : "AFUERA"
+colEstado(e) => e == COMPRAR ? color.new(color.green, 0) : e == VENDER ? color.new(color.red, 0) : e == MANTENER ? color.new(color.orange, 0) : color.new(color.gray, 40)
+num(x) => na(x) ? "—" : x >= 1000 ? str.tostring(x, "#,##0") : x >= 10 ? str.tostring(x, "#,##0.00") : str.tostring(x, "0.0000")
+porc(x) => na(x) ? "—" : (x > 0 ? "+" : "") + str.tostring(x, "0.0") + "%"
+
+fila(tbl, int r, string sym, int e, float g, float v, float px, int t, float res, float p) =>
+    bool enPos = e == COMPRAR or e == MANTENER
+    float nivel = enPos ? v : g
+    string detalle = enPos ? "desde " + str.format_time(t, "dd/MM/yy", "UTC") + " " + porc((p / px - 1) * 100) : "últ. op. " + porc(res)
+    color fg = chart.fg_color
+    table.cell(tbl, 0, r, nombre(sym), text_color = fg, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, r, txtEstado(e), text_color = color.white, bgcolor = colEstado(e), text_size = size.small)
+    table.cell(tbl, 2, r, num(p), text_color = fg, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 3, r, (enPos ? "Vende < " : "Compra > ") + num(nivel), text_color = enPos ? color.red : color.teal, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 4, r, porc((nivel / p - 1) * 100), text_color = fg, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 5, r, detalle, text_color = fg, text_size = size.small, text_halign = text.align_left)
+
+pos = switch posTabla
+    "Abajo derecha"    => position.bottom_right
+    "Arriba izquierda" => position.top_left
+    "Abajo izquierda"  => position.bottom_left
+    => position.top_right
+
+var table tb = table.new(pos, 6, 5, bgcolor = color.new(chart.bg_color, 10), border_color = color.new(color.gray, 70), border_width = 1, frame_color = color.new(color.gray, 50), frame_width = 1)
+if verTabla and barstate.islast
+    fg = chart.fg_color
+    table.cell(tb, 0, 0, "Radar Swing " + str.tostring(nEntrada) + "/" + str.tostring(nSalida) + " + media " + str.tostring(nMedia), text_color = fg, text_size = size.small, text_halign = text.align_left)
+    table.merge_cells(tb, 0, 0, 5, 0)
+    table.cell(tb, 0, 1, "Activo", text_color = color.new(fg, 40), text_size = size.tiny)
+    table.cell(tb, 1, 1, "Estado", text_color = color.new(fg, 40), text_size = size.tiny)
+    table.cell(tb, 2, 1, "Precio", text_color = color.new(fg, 40), text_size = size.tiny)
+    table.cell(tb, 3, 1, "Nivel clave", text_color = color.new(fg, 40), text_size = size.tiny)
+    table.cell(tb, 4, 1, "Distancia", text_color = color.new(fg, 40), text_size = size.tiny)
+    table.cell(tb, 5, 1, "Posición", text_color = color.new(fg, 40), text_size = size.tiny)
+    fila(tb, 2, sym1, e1, g1, v1, px1, t1, r1, p1)
+    fila(tb, 3, sym2, e2, g2, v2, px2, t2, r2, p2)
+    fila(tb, 4, sym3, e3, g3, v3, px3, t3, r3, p3)
+
+// Alerta única para los 3 activos del tablero: crear con "Cualquier llamada a alert()"
+if nuevoDia and (e1 == COMPRAR or e1 == VENDER)
+    alert("Radar Swing: " + txtEstado(e1) + " " + nombre(sym1), alert.freq_once_per_bar)
+if nuevoDia and (e2 == COMPRAR or e2 == VENDER)
+    alert("Radar Swing: " + txtEstado(e2) + " " + nombre(sym2), alert.freq_once_per_bar)
+if nuevoDia and (e3 == COMPRAR or e3 == VENDER)
+    alert("Radar Swing: " + txtEstado(e3) + " " + nombre(sym3), alert.freq_once_per_bar)

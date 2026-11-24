@@ -2,3 +2,8 @@ reporte.html
 historial.csv
 radar.log
 data/
+backtest/*.json
+swing.csv
+largo.csv
+tesorerias.json
+*.jpg

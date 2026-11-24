@@ -4,3 +4,4 @@ radar.log
 data/
 .git
 *.cmd
+backtest

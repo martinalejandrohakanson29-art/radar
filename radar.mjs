@@ -1,10 +1,11 @@
-// BTC Radar — evalúa si hay oportunidad de compra spot (BTC / ETH / SOL)
+// BTC Radar — evalúa si es buen momento de compra a largo plazo (BTC) y las señales de corto plazo (BTC / ETH / SOL)
 // Uso: node radar.mjs [--open]   (sin dependencias, Node 18+)
 import { readFile, writeFile, appendFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { exec, execFile } from 'node:child_process';
+import { largoPlazo, renderLargoPlazo } from './largoplazo.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const OUT = process.env.DATA_DIR || DIR; // en el servidor: volumen persistente
@@ -30,7 +31,7 @@ async function getJSON(url) {
   return r.json();
 }
 
-async function klines(symbol, limit = 200) {
+async function klines(symbol, limit = 500) {
   const raw = await getJSON(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=${limit}`);
   const all = raw.map((k) => ({ t: k[0], open: +k[1], high: +k[2], low: +k[3], close: +k[4], vol: +k[5], closeT: k[6] }));
   const now = Date.now();
@@ -61,14 +62,17 @@ function curlGet(url) {
 
 async function farside(kind) {
   try {
+    // historial completo (necesario para flujos de 20/60 días); si falla, la página corta
+    const full = { btc: 'bitcoin-etf-flow-all-data', eth: 'ethereum-etf-flow-all-data' }[kind]; // SOL no tiene página completa
     const url = `https://farside.co.uk/${kind}/`;
     let html;
-    try { html = await curlGet(url); }
+    try { if (!full) throw new Error('sin historial completo'); html = await curlGet(`https://farside.co.uk/${full}/`); }
+    catch { try { html = await curlGet(url); }
     catch {
       const r = await fetch(url, { headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html' }, signal: AbortSignal.timeout(25000) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       html = await r.text();
-    }
+    } }
     const rows = [];
     const rowRe = /<tr[^>]*>\s*<td><span class="tabletext">(\d{2} \w{3} \d{4})<\/span><\/td>([\s\S]*?)<\/tr>/g;
     let m;
@@ -93,7 +97,7 @@ async function farside(kind) {
 // Yahoo Finance: cierres diarios de índices / futuros (Nasdaq, dólar, oro)
 async function yahoo(symbol) {
   try {
-    const j = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=3mo&interval=1d`,
+    const j = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d`,
       { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(20000) }).then((r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
@@ -221,16 +225,17 @@ function escenarioA(btc, rsiArr, fund, etf, c) {
 
   const coreOk = checks.filter((x) => x.core).every((x) => x.ok);
   const extras = checks.filter((x) => !x.core && x.ok === true).length;
+  // El backtest le da expectativa negativa a esta lógica: nunca marca OPORTUNIDAD, solo avisa.
   let estado = ES;
-  if (coreOk && extras >= c.extrasMinimos) estado = OP;
+  if (coreOk && extras >= c.extrasMinimos) estado = AT;
   else if (sweep || coreOk || barridaEnCurso || Math.min(last.close, live?.close ?? Infinity) <= c.barridaMax * 1.03) estado = AT;
 
   const entrada = last.close;
   const stop = sweep ? sweep.k.low * 0.995 : null;
   const plan = { entrada, objetivo: entrada * (1 + c.objetivoPct / 100), stop };
   return {
-    titulo: 'Escenario A — Rebote por capitulación', estado, checks, plan,
-    resumen: `${extras} de ${checks.filter((x) => !x.core).length} confirmaciones extra (mínimo ${c.extrasMinimos})`,
+    titulo: 'Escenario A — Rebote por capitulación (informativo)', estado, checks, plan,
+    resumen: `Solo contexto, el backtest no le encontró ventaja · ${extras} de ${checks.filter((x) => !x.core).length} confirmaciones extra (mínimo ${c.extrasMinimos})`,
   };
 }
 
@@ -299,6 +304,32 @@ function filtros(btc, etf) {
   };
 }
 
+// ---------- Sistema swing (validado en backtest/) ----------
+// Compra: cierre > máximo de los N cierres previos y > media M. Venta: cierre < mínimo de los X cierres previos.
+// Recorre el histórico para saber si hoy el sistema está comprado o afuera.
+const COMPRAR = 'COMPRAR', VENDER = 'VENDER', MANTENER = 'MANTENER', AFUERA = 'AFUERA';
+function swing(nombre, kl, c) {
+  const k = kl.closed, cl = k.map((x) => x.close), n = k.length, N = c.entradaDias, X = c.salidaDias, M = c.mediaTendencia;
+  if (n < M + 2) return { nombre, error: `pocas velas (${n})` };
+  const media = (i) => avg(cl.slice(i - M + 1, i + 1));
+  const maxPrev = (i, p) => Math.max(...cl.slice(i - p, i));
+  const minPrev = (i, p) => Math.min(...cl.slice(i - p, i));
+  let pos = null, estado = AFUERA, ultimo = null;
+  for (let i = M; i < n; i++) {
+    if (!pos && cl[i] > maxPrev(i, N) && cl[i] > media(i)) { pos = { fecha: day(k[i].t), precio: cl[i] }; estado = i === n - 1 ? COMPRAR : MANTENER; }
+    else if (pos && cl[i] < minPrev(i, X)) { ultimo = { ...pos, salida: day(k[i].t), precioSalida: cl[i] }; pos = null; estado = i === n - 1 ? VENDER : AFUERA; }
+  }
+  // Niveles que va a mirar el próximo cierre (las ventanas ya incluyen la última vela cerrada)
+  const nivelCompra = Math.max(...cl.slice(n - N)), nivelVenta = Math.min(...cl.slice(n - X)), sma = avg(cl.slice(n - M));
+  const precio = kl.live?.close ?? cl[n - 1];
+  return {
+    nombre, estado, precio, cierre: cl[n - 1], sma, nivelCompra, nivelVenta, pos, ultimo,
+    gatillo: Math.max(nivelCompra, sma),
+    resultadoAbierto: pos ? (precio / pos.precio - 1) * 100 : null,
+    resultadoUltimo: ultimo ? (ultimo.precioSalida / ultimo.precio - 1) * 100 : null,
+  };
+}
+
 // ---------- Altcoins ----------
 function altcoin(nombre, c, usdK, ratioK, btc, fund, btcOk) {
   const r = ratioK.closed, n = r.length, rl = r[n - 1];
@@ -348,6 +379,22 @@ function render(d) {
       <div><span class="muted">R:R</span><b>${rr(s.plan)}</b></div>
     </div>
   </section>`;
+  const swBadge = (e) => `<span class="badge ${e === COMPRAR ? 'op' : e === VENDER ? 'sell' : e === MANTENER ? 'at' : 'es'}">${e}</span>`;
+  const swTexto = (w) => w.estado === COMPRAR ? `Señal de compra en el último cierre: comprar la porción asignada. Vender si cierra debajo de ${usd(w.nivelVenta)}.`
+    : w.estado === VENDER ? 'Señal de venta en el último cierre: vender toda la posición.'
+    : w.estado === MANTENER ? `Comprado desde el ${w.pos.fecha} a ${usd(w.pos.precio)} (${pct(w.resultadoAbierto)}). Vender si cierra debajo de ${usd(w.nivelVenta)}.`
+    : `Afuera. Compra si un cierre diario supera ${usd(w.gatillo)} (${pct((w.gatillo / w.precio - 1) * 100)} desde acá).`;
+  const swCard = (w) => w.error ? `<section class="card"><h2>${esc(w.nombre)}</h2><p class="muted">Sin dato (${esc(w.error)})</p></section>` : `
+  <section class="card">
+    <div class="card-head"><h2>${esc(w.nombre)} <span class="muted" style="font-weight:400">${usd(w.precio)}</span></h2>${swBadge(w.estado)}</div>
+    <p>${esc(swTexto(w))}</p>
+    <table>
+      <tr><td>Máximo ${cfg.swing.entradaDias} días (gatillo compra)</td><td class="num">${usd(w.nivelCompra)}</td><td class="num">${pct((w.nivelCompra / w.precio - 1) * 100)}</td></tr>
+      <tr><td>Media ${cfg.swing.mediaTendencia} días (filtro tendencia)</td><td class="num">${usd(w.sma)}</td><td class="num">${pct((w.sma / w.precio - 1) * 100)}</td></tr>
+      <tr><td>Mínimo ${cfg.swing.salidaDias} días (gatillo venta)</td><td class="num">${usd(w.nivelVenta)}</td><td class="num">${pct((w.nivelVenta / w.precio - 1) * 100)}</td></tr>
+      ${w.ultimo ? `<tr><td>Última operación cerrada</td><td class="num" colspan="2">${w.ultimo.fecha} → ${w.ultimo.salida} <span class="${w.resultadoUltimo < 0 ? 'neg' : 'pos'}">${pct(w.resultadoUltimo)}</span></td></tr>` : ''}
+    </table>
+  </section>`;
   const etfTable = (t, e) => e.error ? `<p class="muted">${t}: sin dato (${esc(e.error)})</p>` : `
     <table><caption>${t} (US$ millones)</caption>
     ${e.ultimos.map((r) => `<tr><td>${r.fecha}${r.parcial ? ' <span class="muted">(parcial)</span>' : ''}</td><td class="num ${r.total < 0 ? 'neg' : 'pos'}">${fmt(r.total, 1)}</td></tr>`).join('')}
@@ -368,14 +415,14 @@ h1{margin:0 0 4px;font-size:1.5rem}h2{margin:0;font-size:1.05rem}.muted{color:va
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
 .card-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:4px}
 .badge{font-weight:700;font-size:.78rem;padding:4px 10px;border-radius:999px;letter-spacing:.03em;white-space:nowrap}
-.badge.op{color:var(--op);background:var(--op-bg)}.badge.at{color:var(--at);background:var(--at-bg)}.badge.es{color:var(--es);background:var(--es-bg)}
+.badge.op{color:var(--op);background:var(--op-bg)}.badge.at{color:var(--at);background:var(--at-bg)}.badge.es{color:var(--es);background:var(--es-bg)}.badge.sell{color:var(--neg);background:var(--es-bg)}.checks .ic{font-weight:700;text-align:center}
 .checks{list-style:none;padding:0;margin:10px 0}.checks li{display:flex;gap:10px;padding:7px 0;border-top:1px solid var(--line)}
 .ic{width:1.4em;flex:none}.tag{font-size:.7rem;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--muted)}
 .plan{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;border-top:1px solid var(--line);padding-top:10px}
 .plan div{display:flex;flex-direction:column;font-size:.85rem}
 table{width:100%;border-collapse:collapse;font-size:.9rem}caption{text-align:left;font-weight:600;padding-bottom:6px}
 td{padding:4px 0;border-top:1px solid var(--line)}.num{text-align:right;font-variant-numeric:tabular-nums}.neg{color:var(--neg)}.pos{color:var(--pos)}
-.filters li{margin:4px 0}h3{margin:22px 0 10px;font-size:1rem}
+.filters li{margin:4px 0}.hist{font-size:.8rem;color:var(--fg);opacity:.85}.lp-hero{border-width:2px}.lp-hero h2{font-size:1.15rem}.lp-hero p{margin:8px 0}h3{margin:22px 0 10px;font-size:1rem}
 footer{margin-top:24px;font-size:.8rem}
 @media (max-width:480px){.plan{grid-template-columns:repeat(2,1fr)}}
 </style></head><body><main>
@@ -383,6 +430,11 @@ footer{margin-top:24px;font-size:.8rem}
   <div><h1>BTC Radar</h1><div class="muted">Generado ${esc(d.generado)} · señales con la vela diaria cerrada del ${d.velaFecha}</div></div>
   <div><div class="price">${usd(d.precio)}</div><div class="muted">BTC ahora (vela en curso ${pct(d.cambioVivo, 2)})</div></div>
 </div>
+${d.LP.error ? '' : renderLargoPlazo(d.LP)}
+<h3>Sistema swing (corto plazo, opcional)</h3>
+<p class="muted" style="margin-top:-4px">Compra si el cierre diario supera el máximo de ${cfg.swing.entradaDias} días y la media de ${cfg.swing.mediaTendencia}; vende si cierra debajo del mínimo de ${cfg.swing.salidaDias} días. ${fmt(cfg.swing.pesoPorActivo * 100)}% del capital por activo, solo spot. Se decide con la vela diaria cerrada (21:00 ART).</p>
+<div class="grid">${d.swing.map(swCard).join('')}</div>
+<h3>Escenarios BTC (contexto)</h3>
 <div class="grid">${card(d.A)}${card(d.B)}</div>
 <h3>Altcoins (solo cuentan si BTC confirma)</h3>
 <div class="grid">${card(d.ETH)}${card(d.SOL)}</div>
@@ -406,29 +458,42 @@ footer{margin-top:24px;font-size:.8rem}
   <section class="card">${etfTable('ETF Ethereum', d.etfEth)}</section>
 </div>
 ${d.errores.length ? `<h3>Errores</h3><section class="card">${d.errores.map(esc).join('<br>')}</section>` : ''}
-<footer class="muted">Reglas fijas sobre datos de Binance y Farside. No es asesoramiento financiero. Niveles editables en config.json.</footer>
+<footer class="muted">Reglas fijas sobre datos de Binance, Farside, CoinMetrics, CoinGecko, DefiLlama, Coinbase, alternative.me y Yahoo. Las estadísticas históricas cubren pocos ciclos (2014–hoy): orientan, no garantizan. No es asesoramiento financiero. Niveles editables en config.json.</footer>
 </main></body></html>`;
 }
 
 // ---------- main ----------
 const errores = [];
 const alts = Object.entries(cfg.altcoins);
-const [btc, fundBtc, etfBtcRaw, etfEthRaw, nqRaw, dxyRaw, oroRaw, ...altData] = await Promise.all([
+const [btc, fundBtc, etfBtcRaw, etfEthRaw, etfSolRaw, nqRaw, dxyRaw, oroRaw, ...altData] = await Promise.all([
   klines('BTCUSDT'),
   funding('BTCUSDT'),
   farside('btc'),
   farside('eth'),
+  farside('sol'),
   yahoo(cfg.macro.nasdaq),
   yahoo(cfg.macro.dolar),
   yahoo(cfg.macro.oro),
   ...alts.flatMap(([, c]) => [klines(c.par), klines(c.ratio), funding(c.perpetuo)]),
 ]);
+const swingRes = await Promise.all(Object.entries(cfg.swing.activos).map(([nombre, par]) =>
+  (par === 'BTCUSDT' ? Promise.resolve(btc) : klines(par)).then((kl) => swing(nombre, kl, cfg.swing)).catch((e) => ({ nombre, error: e.message }))));
+for (const w of swingRes) if (w.error) errores.push(`Swing ${w.nombre}: ${w.error}`);
 const etfBtc = etfResumen(etfBtcRaw), etfEth = etfResumen(etfEthRaw);
 if (etfBtc.error) errores.push('Farside BTC: ' + etfBtc.error);
 if (etfEth.error) errores.push('Farside ETH: ' + etfEth.error);
 if (fundBtc.error) errores.push('Funding BTC: ' + fundBtc.error);
 const MACRO = { nasdaq: macroResumen(nqRaw), dolar: macroResumen(dxyRaw), oro: macroResumen(oroRaw) };
 for (const [k, v] of Object.entries(MACRO)) if (v.error) errores.push(`Yahoo ${k}: ${v.error}`);
+
+const etfAltRows = { ETH: etfEthRaw.rows, SOL: etfSolRaw.rows };
+const altsLp = Object.fromEntries(alts.map(([nombre, c], i) => {
+  const [u, r, f] = altData.slice(i * 3, i * 3 + 3);
+  return [nombre, { par: c.par, precio: u.live?.close ?? u.closed.at(-1).close, ratio: r, fund: f, etfRows: etfAltRows[nombre] }];
+}));
+const LP = await largoPlazo({ btc, precio: btc.live?.close ?? btc.closed.at(-1).close, etfRows: etfBtcRaw.rows, macro: MACRO, fundBtc, dataDir: OUT, alts: altsLp })
+  .catch((e) => ({ error: e.message }));
+if (LP.error) errores.push('Largo plazo: ' + LP.error); else errores.push(...LP.errores.map((e) => 'Largo plazo · ' + e));
 
 const rsiArr = rsi(btc.closed.map((x) => x.close));
 const A = escenarioA(btc, rsiArr, fundBtc, etfBtc, cfg.escenarioA);
@@ -451,7 +516,7 @@ const d = {
   velaFecha: day(lastClosed.t),
   precio, cambioVivo: btc.live ? (btc.live.close / btc.live.open - 1) * 100 : null,
   rsiBtc: rsiArr.at(-1), fundBtc, etfBtc, etfEth, filtros: F, errores, macro: MACRO,
-  A, B, ETH: altRes.ETH, SOL: altRes.SOL,
+  A, B, ETH: altRes.ETH, SOL: altRes.SOL, swing: swingRes, LP,
 };
 
 await mkdir(OUT, { recursive: true });
@@ -464,12 +529,41 @@ if (!existsSync(hist)) await writeFile(hist, 'generado,vela,precio,rsi,funding3d
 await appendFile(hist, [new Date().toISOString(), d.velaFecha, precio.toFixed(0), d.rsiBtc.toFixed(1),
   fundBtc.prom3d?.toFixed(4) ?? '', etfBtc.suma3?.toFixed(1) ?? '', A.estado, B.estado, altRes.ETH?.estado, altRes.SOL?.estado].join(',') + '\n', 'utf8');
 
+// historial del sistema swing
+const histSw = path.join(OUT, 'swing.csv');
+if (!existsSync(histSw)) await writeFile(histSw, 'generado,vela,activo,estado,cierre,gatilloCompra,gatilloVenta\n', 'utf8');
+await appendFile(histSw, swingRes.filter((w) => !w.error).map((w) => [new Date().toISOString(), d.velaFecha, w.nombre, w.estado,
+  w.cierre, +w.gatillo.toPrecision(6), +w.nivelVenta.toPrecision(6)].join(',') + '\n').join(''), 'utf8');
+
+// historial de largo plazo
+if (!LP.error) {
+  const histLp = path.join(OUT, 'largo.csv');
+  // una fila por activo; "puntos" = clave:puntos de cada indicador
+  if (!existsSync(histLp)) await writeFile(histLp, 'generado,vela,activo,precio,recomendacion,zona,puntosValuacion,puntosDemanda,puntos\n', 'utf8');
+  const pts = (a) => a.filter((x) => x.key !== 'vol').map((x) => `${x.key}:${x.puntos}`).join(' ');
+  const ahora = new Date().toISOString();
+  const filas = [[ahora, d.velaFecha, 'BTC', precio.toFixed(0), LP.reco, LP.zona, LP.pVal, LP.pDem, pts([...LP.val, ...LP.sen, ...LP.flu, ...LP.mac])],
+    ...LP.alts.filter((a) => !a.error).map((a) => [ahora, d.velaFecha, a.nombre, +a.precio.toPrecision(6), a.reco, a.zona, a.pVal, a.pDem, pts([...a.val, ...a.dem])])];
+  await appendFile(histLp, filas.map((f) => f.join(',') + '\n').join(''), 'utf8');
+}
+
 // consola
 console.log(`\nBTC Radar — ${d.generado}   BTC ${usd(precio)}   (vela cerrada ${d.velaFecha})`);
+if (!LP.error) {
+  console.log(`  LARGO PLAZO  ${LP.reco}  — ${LP.zona} (valuación ${LP.pVal}) · demanda ${LP.demanda} (${LP.pDem})`);
+  for (const x of [...LP.val, ...LP.sen, ...LP.flu, ...LP.mac]) console.log(`     ${(x.puntos > 0 ? '+' : '') + x.puntos}  ${x.nombre}: ${x.valor}`);
+  for (const a of LP.alts) {
+    if (a.error) { console.log(`  LARGO ${a.nombre}  sin dato (${a.error})`); continue; }
+    console.log(`  LARGO ${a.nombre.padEnd(5)} ${a.reco}  — ${a.zona} (valuación ${a.pVal}/${a.tope}) · fuerza/demanda ${a.pDem}`);
+    for (const x of [...a.val, ...a.dem]) console.log(`     ${(x.puntos > 0 ? '+' : '') + x.puntos}  ${x.nombre}: ${x.valor}`);
+  }
+}
+for (const w of swingRes) if (!w.error) console.log(`  SWING ${w.nombre.padEnd(6)} ${w.estado.padEnd(9)} ${w.pos ? `comprado desde ${w.pos.fecha} · vender si cierra < ${usd(w.nivelVenta)}` : `comprar si cierra > ${usd(w.gatillo)}`}`);
 for (const s of [A, B, ...Object.values(altRes)]) console.log(`  ${s.estado.padEnd(12)} ${s.titulo}  — ${s.resumen}`);
 F.lista.filter((f) => f.activo).forEach((f) => console.log(`  ${f.bloquea ? 'BLOQUEO' : 'AVISO  '}      ${f.nombre}`));
 errores.forEach((e) => console.log('  ERROR        ' + e));
 console.log(`\nReporte: ${outFile}\n`);
 
-const haySenal = [A, B, ...Object.values(altRes)].some((s) => s.estado === OP);
+const haySenal = (!LP.error && LP.reco === 'COMPRAR FUERTE') || [A, B, ...Object.values(altRes)].some((s) => s.estado === OP)
+  || swingRes.some((w) => w.estado === COMPRAR || w.estado === VENDER);
 if (IS_WIN && (FORCE_OPEN || (haySenal && cfg.abrirNavegadorSiHaySenal))) exec(`start "" "${outFile}"`);

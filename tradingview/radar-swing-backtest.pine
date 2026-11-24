@@ -1,0 +1,47 @@
+//@version=6
+// Radar Swing — versión estrategia para el Strategy Tester de TradingView.
+// Misma regla que radar.mjs y backtest/: señal al cierre diario, ejecución en la apertura siguiente.
+// Comisión 0,15% por lado (0,1% de Binance + slippage), igual que nuestro backtest.
+// Usar en velas DIARIAS, por ejemplo BINANCE:BTCUSDT, BINANCE:ETHUSDT o BINANCE:SOLUSDT.
+// Tamaño 99% y no 100%: la cantidad se calcula al cierre y se compra en la apertura siguiente con
+// comisión; al 100% la orden puede costar más que el capital y TradingView dispara un "margin call"
+// que vende parte de la posición y ensucia el resultado.
+strategy("Radar Swing — backtest", shorttitle = "Radar Swing BT", overlay = true, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 99, commission_type = strategy.commission.percent, commission_value = 0.15, margin_long = 100, process_orders_on_close = false, pyramiding = 0)
+
+nEntrada = input.int(30, "Entrada: máximo de N días", minval = 2)
+nSalida  = input.int(15, "Salida: mínimo de N días", minval = 2)
+nMedia   = input.int(200, "Media de tendencia (días)", minval = 10)
+desde    = input.time(1521072000000, "Operar desde")  // 15/03/2018 00:00 UTC (se cambia desde Configuración)
+
+// Solo 1D: en 2D/3D los "N días" pasarían a ser N velas de varios días
+if not (timeframe.isdaily and timeframe.multiplier == 1)
+    runtime.error("Radar Swing BT: poné el gráfico en velas diarias (1D).")
+
+maxPrev = ta.highest(close[1], nEntrada)
+minPrev = ta.lowest(close[1], nSalida)
+media   = ta.sma(close, nMedia)
+enPos   = strategy.position_size > 0
+
+if time >= desde and not enPos and not na(media) and close > maxPrev and close > media
+    strategy.entry("Swing", strategy.long, comment = "Compra")
+if enPos and close < minPrev
+    strategy.close("Swing", comment = "Venta")
+
+plot(enPos ? minPrev : math.max(maxPrev, media), "Gatillo", enPos ? color.red : color.teal, 2, plot.style_stepline)
+plot(media, "Media", color.new(color.gray, 30))
+bgcolor(enPos ? color.new(color.green, 90) : na)
+
+// Comparación con comprar y mantener desde la misma fecha (para leer el resultado en contexto)
+var float px0 = na
+if time >= desde and na(px0)
+    px0 := close
+var table tb = table.new(position.top_right, 2, 3, bgcolor = color.new(chart.bg_color, 10), frame_color = color.new(color.gray, 50), frame_width = 1)
+if barstate.islast and not na(px0)
+    float sis = strategy.equity / strategy.initial_capital * 100 - 100
+    float bh  = close / px0 * 100 - 100
+    table.cell(tb, 0, 0, "Sistema", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tb, 1, 0, str.tostring(sis, "0") + "%", text_color = sis >= 0 ? color.green : color.red, text_size = size.small)
+    table.cell(tb, 0, 1, "Comprar y mantener", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tb, 1, 1, str.tostring(bh, "0") + "%", text_color = bh >= 0 ? color.green : color.red, text_size = size.small)
+    table.cell(tb, 0, 2, "Estado", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tb, 1, 2, strategy.position_size > 0 ? "COMPRADO" : "AFUERA", text_color = chart.fg_color, text_size = size.small)

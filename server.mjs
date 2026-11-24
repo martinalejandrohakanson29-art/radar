@@ -58,9 +58,10 @@ http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
-    if (url.pathname === '/historial.csv') {
-      const csv = await readFile(path.join(DATA, 'historial.csv'));
-      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="historial.csv"' });
+    if (url.pathname === '/historial.csv' || url.pathname === '/swing.csv' || url.pathname === '/largo.csv') {
+      const nombre = url.pathname.slice(1);
+      const csv = await readFile(path.join(DATA, nombre));
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${nombre}"` });
       return res.end(csv);
     }
     if (url.pathname === '/actualizar' && req.method === 'POST') {

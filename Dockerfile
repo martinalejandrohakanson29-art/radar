@@ -1,7 +1,7 @@
 FROM node:22-alpine
 RUN apk add --no-cache curl tzdata
 WORKDIR /app
-COPY radar.mjs server.mjs config.json ./
+COPY radar.mjs largoplazo.mjs server.mjs config.json ./
 ENV NODE_ENV=production DATA_DIR=/data PORT=3000 TZ=America/Argentina/Buenos_Aires
 VOLUME /data
 EXPOSE 3000
