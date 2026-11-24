@@ -496,7 +496,7 @@ const altsLp = Object.fromEntries(alts.map(([nombre, c], i) => {
   const [u, r, f] = altData.slice(i * 3, i * 3 + 3);
   return [nombre, { par: c.par, precio: u.live?.close ?? u.closed.at(-1).close, ratio: r, fund: f, etfRows: etfAltRows[nombre] }];
 }));
-const LP = await largoPlazo({ btc, precio: btc.live?.close ?? btc.closed.at(-1).close, etfRows: etfBtcRaw.rows, macro: MACRO, fundBtc, dataDir: OUT, alts: altsLp })
+const LP = await largoPlazo({ btc, precio: btc.live?.close ?? btc.closed.at(-1).close, etfRows: etfBtcRaw.rows, macro: MACRO, fundBtc, dataDir: OUT, alts: altsLp, retestCfg: cfg.retest })
   .catch((e) => ({ error: e.message }));
 if (LP.error) errores.push('Largo plazo: ' + LP.error); else errores.push(...LP.errores.map((e) => 'Largo plazo · ' + e));
 
@@ -556,6 +556,10 @@ if (!LP.error) {
 console.log(`\nBTC Radar — ${d.generado}   BTC ${usd(precio)}   (vela cerrada ${d.velaFecha})`);
 if (!LP.error) {
   console.log(`  LARGO PLAZO  ${LP.reco}  — ${LP.zona} (valuación ${LP.pVal}) · demanda ${LP.demanda} (${LP.pDem})`);
+  if (LP.retest) {
+    console.log(`  RETEST       ${LP.retest.estado}  — ${LP.retest.titulo}`);
+    for (const x of LP.retest.checks) console.log(`     ${x.ok === true ? 'OK ' : x.ok === false ? 'NO ' : ' - '} ${x.nombre}: ${x.detalle}`);
+  }
   for (const x of [...LP.val, ...LP.sen, ...LP.flu, ...LP.mac]) console.log(`     ${(x.puntos > 0 ? '+' : '') + x.puntos}  ${x.nombre}: ${x.valor}`);
   for (const a of LP.alts) {
     if (a.error) { console.log(`  LARGO ${a.nombre}  sin dato (${a.error})`); continue; }

@@ -1,5 +1,5 @@
 {
-  "_nota": "Niveles al 21/11/2026. Actualizalos cuando cambie el mercado; el código no hace falta tocarlo.",
+  "_nota": "Niveles al 24/11/2026. Actualizalos cuando cambie el mercado; el código no hace falta tocarlo.",
 
   "swing": {
     "_desc": "Sistema swing validado con backtest (backtest/): compra si cierre > máximo de N días y > media M; vende si cierre < mínimo de X días. Solo spot, long o afuera.",
@@ -10,10 +10,27 @@
     "pesoPorActivo": 0.3333
   },
 
+  "retest": {
+    "_desc": "Uso táctico de la reserva si BTC vuelve a la zona del piso de junio. Precio (requisito) + al menos 2 de: ETF achicando/girando, prima Coinbase, funding negativo. Se decide con la vela diaria cerrada.",
+    "activo": true,
+    "titulo": "Retest 55–58k (piso de junio)",
+    "techoZona": 58000,
+    "pisoRecupera": 57800,
+    "minimoCiclo": 55130,
+    "minimoCicloFecha": "2026-11-21",
+    "invalidacion": 55000,
+    "diasVentana": 7,
+    "etfSalidaChicaMillones": -200,
+    "etfReferenciaMillones": -625,
+    "primaCoinbaseMinima": -0.05,
+    "confirmacionesMinimas": 2,
+    "montoReserva": 150
+  },
+
   "escenarioA": {
     "_desc": "SOLO INFORMATIVO: el backtest (backtest/escenarioA.mjs) le da expectativa negativa. Nunca marca OPORTUNIDAD.",
-    "barridaMax": 57000,
-    "recuperacion": 59000,
+    "barridaMax": 57800,
+    "recuperacion": 57800,
     "velasBarrida": 2,
     "mechaMinima": 0.4,
     "volumenMultiplo": 1.5,
@@ -23,8 +40,8 @@
 
   "escenarioB": {
     "_desc": "Confirmación: cierre diario sobre ruptura + retesteo sostenido",
-    "ruptura": 63000,
-    "invalidacion": 61000,
+    "ruptura": 64600,
+    "invalidacion": 57800,
     "diasRuptura": 7,
     "toleranciaRetestPct": 1.5,
     "volumenMultiplo": 1.2,

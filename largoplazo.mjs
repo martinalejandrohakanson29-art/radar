@@ -55,7 +55,7 @@ async function primaCoinbase(btc) {
   const pares = cb.map((c) => ({ d: day(c[0] * 1000), cb: c[4] })).filter((x) => bn.has(x.d)).sort((a, b) => a.d.localeCompare(b.d));
   const prima = pares.map((x) => (x.cb / bn.get(x.d) - 1) * 100);
   if (prima.length < 14) throw new Error('pocos datos');
-  return { prom7: avg(prima.slice(-7)), prom30: avg(prima.slice(-30)) };
+  return { prom7: avg(prima.slice(-7)), prom30: avg(prima.slice(-30)), serie: pares.map((x, i) => ({ d: x.d, v: prima[i] })) };
 }
 // Volumen semanal en USD (Binance). Solo informativo: el estudio de nov-2026 no le encontró ventaja confiable.
 async function volumenSemanal(symbol) {
@@ -189,8 +189,86 @@ function itemEtf(rows, nombre, umbral) {
     { s5, sk });
 }
 
+// ---------- Retest de zona (uso táctico de la reserva) ----------
+// Requisito: el precio vuelve a la zona y arma piso (mínimo más alto o barrida recuperada) con cierre arriba de pisoRecupera.
+// Confirmaciones: ETF con salidas chicas o entradas en los días del retest, prima Coinbase recuperada, funding negativo.
+export function retest(btc, etfRows, cb, fundBtc, c) {
+  const k = btc.closed, n = k.length, last = k[n - 1];
+  // solo velas posteriores al mínimo del ciclo (la caída que lo marcó no es un retest)
+  const ventana = k.slice(n - c.diasVentana).filter((x) => day(x.t) > (c.minimoCicloFecha ?? ''));
+  const enZona = ventana.filter((x) => x.low <= c.techoZona);
+  const checks = [];
+  const ck = (nombre, ok, detalle, core = false) => checks.push({ nombre, ok, detalle, core });
+  const base = { titulo: c.titulo, monto: c.montoReserva, checks };
+
+  if (last.close < c.invalidacion) {
+    ck(`Cierre diario arriba de ${usd(c.invalidacion)}`, false, `Último cierre ${usd(last.close)} (${day(last.t)})`, true);
+    return { ...base, estado: 'NO AGREGAR', nivel: 'sell',
+      texto: `Perdió la zona: cierre debajo de ${usd(c.invalidacion)}. No usar la reserva; dejar trabajar las órdenes límite de abajo (precio realizado). Se re-evalúa si recupera ${usd(c.pisoRecupera)} al cierre.` };
+  }
+  if (!enZona.length) {
+    ck(`Precio vuelve a la zona (mínimo diario ≤ ${usd(c.techoZona)})`, false,
+      `Sin retest desde el mínimo del ${c.minimoCicloFecha}${ventana.length ? ` · mínimo posterior ${usd(Math.min(...ventana.map((x) => x.low)))}` : ''} · último cierre ${usd(last.close)} (${pct((c.techoZona / last.close - 1) * 100)} hasta la zona)`, true);
+    return { ...base, estado: 'SIN RETEST', nivel: 'es',
+      texto: `Todavía no volvió a la zona. Si baja a ${usd(c.pisoRecupera)}–${usd(c.techoZona)}, esta tarjeta evalúa si conviene usar USD ${c.montoReserva} de la reserva. Si sube, no perseguir: la reserva se usa recién con un cierre semanal sobre la media de 200 semanas o con COMPRAR FUERTE.` };
+  }
+
+  // --- precio (requisito) ---
+  const minV = enZona.reduce((a, x) => (x.low < a.low ? x : a));
+  const pisoMasAlto = minV.low > c.minimoCiclo;
+  const barridaRecuperada = !pisoMasAlto && minV.close >= c.pisoRecupera;
+  const cierreOk = last.close >= c.pisoRecupera;
+  const precioOk = (pisoMasAlto || barridaRecuperada) && cierreOk;
+  ck('Arma piso en la zona', pisoMasAlto || barridaRecuperada,
+    pisoMasAlto ? `Mínimo del retest ${usd(minV.low)} (${day(minV.t)}): más alto que el mínimo del ciclo ${usd(c.minimoCiclo)}`
+      : barridaRecuperada ? `Perforó ${usd(c.minimoCiclo)} (mín. ${usd(minV.low)}, ${day(minV.t)}) pero cerró el día en ${usd(minV.close)}: barrida recuperada`
+      : `Perforó el mínimo del ciclo (${usd(minV.low)}, ${day(minV.t)}) y no lo recuperó en el día`, true);
+  ck(`Último cierre diario arriba de ${usd(c.pisoRecupera)}`, cierreOk, `Cierre ${usd(last.close)} (${day(last.t)})`, true);
+
+  // --- ETF en los días del retest ---
+  const desde = day(enZona[0].t);
+  const comp = (etfRows ?? []).filter((r) => !r.parcial && r.total != null).map((r) => ({ ...r, d: day(Date.parse(r.fecha + ' UTC')) }));
+  let dias = comp.filter((r) => r.d >= desde);
+  
+  let etfOk = null, etfTxt = 'Todavía no hay días hábiles de ETF completos desde el retest';
+  if (dias.length) {
+    const peor = Math.min(...dias.map((r) => r.total));
+    const dosEntradas = comp.length >= 2 && comp.slice(-2).every((r) => r.total > 0);
+    etfOk = peor > c.etfSalidaChicaMillones || dosEntradas;
+    etfTxt = `Días del retest: ${dias.map((r) => `${r.fecha.slice(0, 6)} ${fmt(r.total, 1)}M`).join(' · ')} · peor día ${fmt(peor, 1)}M vs ${fmt(c.etfReferenciaMillones)}M de la caída (19–20/11)${dosEntradas ? ' · 2 días seguidos de entradas' : ''}`;
+  }
+  ck(`ETF: salidas chicas (> ${fmt(c.etfSalidaChicaMillones)}M/día) o 2 días de entradas`, etfOk, etfTxt);
+
+  // --- Prima Coinbase (promedio 3 días) ---
+  let cbOk = null, cbTxt = 'Sin dato de Coinbase';
+  if (!cb.error && cb.serie?.length >= 3) {
+    const p3 = avg(cb.serie.slice(-3).map((x) => x.v));
+    cbOk = p3 >= c.primaCoinbaseMinima;
+    cbTxt = `Promedio 3 días ${pct(p3, 3)} (mínimo ${pct(c.primaCoinbaseMinima, 2)}) · últimos: ${cb.serie.slice(-3).map((x) => pct(x.v, 3)).join(', ')}`;
+  }
+  ck('Prima Coinbase: EE.UU. deja de vender', cbOk, cbTxt);
+
+  // --- Funding ---
+  const fOk = fundBtc.error ? null : fundBtc.prom3d < 0;
+  ck('Funding negativo (apuestas a la baja)', fOk, fundBtc.error ? 'Sin dato' : `Promedio 3 días ${fmt(fundBtc.prom3d, 4)}%`);
+
+  const conf = [etfOk, cbOk, fOk].filter((x) => x === true).length;
+  let estado, nivel, texto;
+  if (precioOk && conf >= c.confirmacionesMinimas) {
+    estado = 'USAR RESERVA'; nivel = 'op';
+    texto = `Retest con confirmación: piso en la zona y ${conf} de 3 confirmaciones. Comprar USD ${c.montoReserva} de la reserva (spot). La orden en el precio realizado queda puesta igual.`;
+  } else if (precioOk) {
+    estado = 'ATENTO'; nivel = 'at';
+    texto = `El precio arma piso, pero faltan confirmaciones (${conf} de ${c.confirmacionesMinimas}): los grandes todavía venden. No usar la reserva aún; se re-evalúa con cada cierre.`;
+  } else {
+    estado = 'ATENTO'; nivel = 'at';
+    texto = `Está en la zona pero sin piso confirmado. No comprar en la caída: esperar un cierre diario arriba de ${usd(c.pisoRecupera)}. Si cierra debajo de ${usd(c.invalidacion)}, no agregar.`;
+  }
+  return { ...base, estado, nivel, texto, confirmaciones: conf };
+}
+
 // ---------- análisis ----------
-export async function largoPlazo({ btc, precio, etfRows, macro, fundBtc, dataDir, alts = {} }) {
+export async function largoPlazo({ btc, precio, etfRows, macro, fundBtc, dataDir, alts = {}, retestCfg = null }) {
   const altNames = Object.keys(alts);
   const [cm, fg, te, st, cb, volBtc, ...altRaw] = await Promise.all([
     safe(coinmetrics('btc')), safe(fearGreed()), safe(tesorerias()), safe(stablecoins()), safe(primaCoinbase(btc)), safe(volumenSemanal('BTCUSDT')),
@@ -314,7 +392,9 @@ export async function largoPlazo({ btc, precio, etfRows, macro, fundBtc, dataDir
     return { nombre, precio: a.precio, reco: aReco, nivel: aNivel, texto: aTexto, zona: AV.zona, pVal: AV.pVal, tope: AV.tope, pDem: pD, val: items, dem, niveles: AV.niveles.sort((x, y) => y.v - x.v) };
   });
 
-  return { reco, nivel, texto, zona, demanda, pVal, tope: V?.tope, pDem, val, sen, flu, mac, niveles, precio, tesorerias: te.error ? null : te, errores, alts: altRes };
+  const RT = retestCfg?.activo ? retest(btc, etfRows, cb, fundBtc, retestCfg) : null;
+
+  return { reco, nivel, texto, zona, demanda, pVal, tope: V?.tope, pDem, val, sen, flu, mac, niveles, precio, tesorerias: te.error ? null : te, errores, alts: altRes, retest: RT };
 }
 
 // ---------- HTML ----------
@@ -347,6 +427,12 @@ export function renderLargoPlazo(L) {
   La valuación decide si conviene comprar; la demanda decide cuánto y qué tan rápido.</p>
   ${L.alts?.length ? `<p class="muted" style="margin-bottom:0">Satélite: ${L.alts.filter((a) => !a.error).map((a) => `<b>${esc(a.nombre)}</b> ${esc(a.reco)} (${esc(a.zona)})`).join(' · ')}</p>` : ''}
 </section>
+${L.retest ? `<section class="card" style="margin-top:14px">
+  <div class="card-head"><h2>${esc(L.retest.titulo)} · ¿usar USD ${L.retest.monto} de la reserva?</h2><span class="badge ${L.retest.nivel}">${esc(L.retest.estado)}</span></div>
+  <p>${esc(L.retest.texto)}</p>
+  <ul class="checks">${L.retest.checks.map((x) => `<li><span class="ic">${x.ok === true ? '✅' : x.ok === false ? '❌' : '➖'}</span><div><strong>${esc(x.nombre)}</strong>${x.core ? ' <span class="tag">requisito</span>' : ''}<br><span class="muted">${esc(x.detalle)}</span></div></li>`).join('')}</ul>
+  <p class="muted" style="font-size:.8rem;margin:0">Regla: precio (requisito) + al menos 2 de 3 confirmaciones. Se decide con la vela diaria cerrada (21:00). Niveles y montos en config.json → "retest".</p>
+</section>` : ''}
 <div class="grid" style="margin-top:14px">
   ${bloque('¿Está barato BTC? (valuación de ciclo)', L.val)}
   <div style="display:grid;gap:14px;align-content:start">
