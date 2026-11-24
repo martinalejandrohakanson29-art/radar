@@ -210,7 +210,7 @@ export function retest(btc, etfRows, cb, fundBtc, c) {
     ck(`Precio vuelve a la zona (mínimo diario ≤ ${usd(c.techoZona)})`, false,
       `Sin retest desde el mínimo del ${c.minimoCicloFecha}${ventana.length ? ` · mínimo posterior ${usd(Math.min(...ventana.map((x) => x.low)))}` : ''} · último cierre ${usd(last.close)} (${pct((c.techoZona / last.close - 1) * 100)} hasta la zona)`, true);
     return { ...base, estado: 'SIN RETEST', nivel: 'es',
-      texto: `Todavía no volvió a la zona. Si baja a ${usd(c.pisoRecupera)}–${usd(c.techoZona)}, esta tarjeta evalúa si conviene usar USD ${c.montoReserva} de la reserva. Si sube, no perseguir: la reserva se usa recién con un cierre semanal sobre la media de 200 semanas o con COMPRAR FUERTE.` };
+      texto: `Todavía no volvió a la zona. Si baja a la zona ${fmt(c.invalidacion)}–${fmt(c.techoZona)}, esta tarjeta evalúa si conviene usar USD ${c.montoReserva} de la reserva. Si sube, no perseguir: la reserva se usa recién con un cierre semanal sobre la media de 200 semanas o con COMPRAR FUERTE.` };
   }
 
   // --- precio (requisito) ---
