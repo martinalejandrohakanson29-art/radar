@@ -512,7 +512,7 @@ alts.forEach(([nombre, c], i) => {
 const lastClosed = btc.closed.at(-1);
 const precio = btc.live?.close ?? lastClosed.close;
 const d = {
-  generado: new Date().toLocaleString('es-AR'),
+  generado: new Date().toLocaleString('es-AR', { hour12: false, timeZone: 'America/Argentina/Buenos_Aires' }),
   velaFecha: day(lastClosed.t),
   precio, cambioVivo: btc.live ? (btc.live.close / btc.live.open - 1) * 100 : null,
   rsiBtc: rsiArr.at(-1), fundBtc, etfBtc, etfEth, filtros: F, errores, macro: MACRO,
